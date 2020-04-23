@@ -21,7 +21,7 @@ def get_syns(x):
    return list(set(synonyms))
 
 def all_ngram_merger(list_val):
-   return sum([[" ".join(j) for j in list(ngrams(list_val,i)) ]for i in range(1,len(list_val))], [])
+   return sum([[" ".join(j) for j in list(ngrams(list_val, i)) ]for i in range(1,len(list_val)+1)], [])
 
 def is_number(s):
     try:
@@ -57,18 +57,19 @@ class ChatAnswer:
                                  + [c.lower() for c in self.columnNames ] 
                                  + sum(self.synonym_dict.values(), []))
       self.active_filters = []
+      self.column_found = []
       self.clarification_question_ask = 0
       self.genericResponseKernel = aiml.Kernel()
 
-      folder_list = ["alice"]
-      print("Prep complete")
-      print("preparing generic response Kernel")
-      for each_folder in folder_list:
-         path = "additional_resources/botdata/"+each_folder
-         filenames = os.listdir(path)
-         for eachFilename in filenames:
-            self.genericResponseKernel.learn(path+"/"+eachFilename)
-
+      # folder_list = ["alice"]
+      # print("Prep complete")
+      # print("preparing generic response Kernel")
+      # for each_folder in folder_list:
+      #    path = "additional_resources/botdata/"+each_folder
+      #    filenames = os.listdir(path)
+      #    for eachFilename in filenames:
+      #       self.genericResponseKernel.learn(path+"/"+eachFilename)
+      
       print("kernel Ready")
       print("Sample Test Hi !")
       result_message = self.genericResponseKernel.respond("hi")
@@ -87,18 +88,20 @@ def chat_worker():
    json_parsed_data = {"message":message}
    unigrams = json_parsed_data["message"].lower().split()
    stem_chat_grams = all_ngram_merger([stem(i) for i in unigrams])
-   chat_grams = all_ngram_merger(unigrams)
+   chat_grams = sorted(all_ngram_merger(unigrams), key = lambda x:len(x.split()), reverse=True)
+   print (chat_grams)
    is_in_topic = chatAnswerObj.core_words.intersection(unigrams)
    if chatAnswerObj.clarification_question_ask:
       selected_df = chatAnswerObj.saved_df
       active_filters = chatAnswerObj.active_filters
       chatAnswerObj.clarification_question_ask = 0
+      column_found = chatAnswerObj.column_found
    else:
       active_filters = []
       selected_df =chatAnswerObj.input_df
-   if is_in_topic:
-      print(is_in_topic)
       column_found = []
+   if is_in_topic:
+      print("is_in_topic :", is_in_topic)
       values_matched_column = []
       for each_columnName in chatAnswerObj.columnNames:
          if each_columnName.lower() in chat_grams:
@@ -108,29 +111,63 @@ def chat_worker():
                if stem(eachSyn) in stem_chat_grams or eachSyn in chat_grams:
                   column_found.append(each_columnName)
                   break
-         matched_sets = set(chatAnswerObj.value_dict[each_columnName]).intersection(chat_grams)
-         if matched_sets:
-            values_matched_column.append(each_columnName)
+      for each_columnName in chatAnswerObj.columnNames:
+         if chatAnswerObj.input_df[each_columnName].dtypes.str.endswith("O"):
+            for actual_gram in chat_grams:
+               matched_set_df = chatAnswerObj.input_df[chatAnswerObj.input_df[each_columnName].str.contains(actual_gram, case=False, regex=True)][each_columnName]
+               if matched_set_df.shape[0]>0:
+                  break
+            else:
+               continue
+            print ("#"*10)
+            print (each_columnName)
+            print (matched_set_df)
+            print ("#"*10)
+            if matched_set_df.shape[0]>1:
+               chatAnswerObj.column_found = column_found
+               chatAnswerObj.saved_df = selected_df
+               chatAnswerObj.active_filters = active_filters
+               response = "There seems to be multiple results showing, Do you want the information for "
+               multichoice = list(json.loads(matched_set_df.to_json()).values())
+               chatAnswerObj.clarification_question_ask = 1
+               if len(multichoice) >2:
+                  response += ", ".join(multichoice[:-1]) + " or "+multichoice[-1]
+               else:
+                  response += multichoice[0] + " or " + multichoice[-1]
+               return json.dumps({"response_message":response})
+            elif matched_set_df.shape[0]>0:
+               values_matched_column.append(each_columnName)
       select_column = values_matched_column + column_found
       select_column = list(set(select_column))
       if values_matched_column:
+         print("Values Matched ", values_matched_column)
+         selected_df = chatAnswerObj.input_df
          for each_column in values_matched_column:
-            selected_df["message_result"] = chatAnswerObj.input_df[each_column].apply(lambda x: int(str(x).lower() in json_parsed_data["message"].lower()) or [0, 2][bool(set(str(x).lower().split()).intersection(unigrams))] )
-            selected_values_df = selected_df[selected_df["message_result"] == 1]
-            if selected_values_df.shape[-1] > 0:
+            temp_df = selected_df
+            temp_df["message_result"] = temp_df[each_column].apply(lambda x: int(str(x).lower() in json_parsed_data["message"].lower()) or [0, 2][bool(set(str(x).lower().split()).intersection(unigrams))] )
+            selected_values_df = temp_df[temp_df["message_result"] == 1]
+            print("Shape check ", selected_values_df.shape)
+            if selected_values_df.shape[0] > 0:
+               print("Result Found setting filters")
                selected_df = selected_values_df
-               active_filters.append([each_column, selected_values_df[each_column]])
-            else:
-               partial_selected_values_df = chatAnswerObj.input_df[chatAnswerObj.input_df["message_result"] == 2]
-               if partial_selected_values_df.shape[-1]==1:
+               print(selected_df)
+               active_filters.append([each_column, selected_values_df[each_column].tolist()[0]])
+         else:
+            for each_column in values_matched_column:
+               temp_df = selected_df
+               temp_df["message_result"] = temp_df[each_column].apply(lambda x: int(str(x).lower() in json_parsed_data["message"].lower()) or [0, 2][bool(set(str(x).lower().split()).intersection(unigrams))] )
+               partial_selected_values_df = temp_df[temp_df["message_result"] == 2]
+               if partial_selected_values_df.shape[0]==1:
+                  print("PARTIAL MATCH FOUND SINGLE")
                   selected_df = partial_selected_values_df
                   active_filters.append([each_column, selected_df[each_column]])
-               else:
+               elif partial_selected_values_df.shape[0]>1:
+                  print("PARTIAL MATCH FOUND MULTIPLE")
                   chatAnswerObj.clarification_question_ask = 1
       if chatAnswerObj.clarification_question_ask:
          chatAnswerObj.saved_df = selected_df
-         chatAnswerObj.active_filters = active_filters   
-      response = send_response(selected_df, active_filters, select_column, chatAnswerObj.clarification_question_ask)
+         chatAnswerObj.active_filters = active_filters
+      response = send_response(selected_df, active_filters, select_column, column_found, chatAnswerObj.clarification_question_ask)
    else:
       response = get_generic_response(json_parsed_data["message"], chatAnswerObj.genericResponseKernel)    
    return json.dumps({"response_message":response})
