@@ -8,7 +8,7 @@
    pip install flask
    pip install pandas
    pip install python-aiml
-   
+
 2. Run the Flask server from the root server as such :
    python3 -m flask run
 
