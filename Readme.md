@@ -26,6 +26,10 @@
    pip install flask
    pip install pandas
    pip install python-aiml
+   pip install nltk
+   
+   # Do a download of nltk resources
+   nltk.download("all")
    ```
 2. Run the Flask server from the root server as such :
    ```
